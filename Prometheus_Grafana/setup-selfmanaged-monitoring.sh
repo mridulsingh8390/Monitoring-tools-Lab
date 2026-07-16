@@ -69,10 +69,12 @@ on_error() {
 trap on_error ERR
 
 # Builds a "--version X" arg array if a version string was provided, empty otherwise.
-version_arg() {
+version_args_for() {
   local v="$1"
+  local -n out_array="$2"
+  out_array=()
   if [[ -n "$v" ]]; then
-    echo "--version $v"
+    out_array+=(--version "$v")
   fi
 }
 
@@ -189,20 +191,20 @@ EOF
     warn "GRAFANA_SERVICE_TYPE=LoadBalancer exposes Grafana on a public IP with no auth/TLS in front of it. Fine for a quick test; for production set GRAFANA_SERVICE_TYPE=ClusterIP and put an Ingress + TLS + auth in front instead."
   fi
 
-  local version_flag
-  version_flag=$(version_arg "$KUBE_PROMETHEUS_STACK_VERSION")
+  local version_flag=()
+  version_args_for "$KUBE_PROMETHEUS_STACK_VERSION" version_flag
 
   if helm status monitoring -n "$MONITORING_NAMESPACE" >/dev/null 2>&1; then
     log "Release 'monitoring' already exists, upgrading instead of installing"
     helm upgrade monitoring prometheus-community/kube-prometheus-stack \
       -n "$MONITORING_NAMESPACE" \
       -f "$WORKDIR/kube-prom-values.yaml" \
-      $version_flag
+      "${version_flag[@]}"
   else
     helm install monitoring prometheus-community/kube-prometheus-stack \
       -n "$MONITORING_NAMESPACE" \
       -f "$WORKDIR/kube-prom-values.yaml" \
-      $version_flag
+      "${version_flag[@]}"
   fi
 
   log "Waiting for pods to become ready (up to 5 minutes)..."
@@ -218,19 +220,26 @@ print_grafana_access() {
 
   kubectl get svc -n "$MONITORING_NAMESPACE"
 
-  log "Waiting for Grafana LoadBalancer external IP (up to 3 minutes)..."
-  EXTERNAL_IP=""
-  for i in $(seq 1 18); do
-    EXTERNAL_IP=$(kubectl get svc -n "$MONITORING_NAMESPACE" monitoring-grafana \
-      -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-    [[ -n "$EXTERNAL_IP" ]] && break
-    sleep 10
-  done
+  if [[ "$GRAFANA_SERVICE_TYPE" == "LoadBalancer" ]]; then
+    log "Waiting for Grafana LoadBalancer external IP (up to 3 minutes)..."
+    EXTERNAL_IP=""
+    for i in $(seq 1 18); do
+      EXTERNAL_IP=$(kubectl get svc -n "$MONITORING_NAMESPACE" monitoring-grafana \
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+      [[ -n "$EXTERNAL_IP" ]] && break
+      sleep 10
+    done
 
-  if [[ -n "$EXTERNAL_IP" ]]; then
-    log "Grafana URL: http://${EXTERNAL_IP}"
+    if [[ -n "$EXTERNAL_IP" ]]; then
+      log "Grafana URL: http://${EXTERNAL_IP}"
+    else
+      warn "External IP not yet assigned. Check later with: kubectl get svc -n $MONITORING_NAMESPACE"
+    fi
   else
-    warn "External IP not yet assigned. Check later with: kubectl get svc -n $MONITORING_NAMESPACE"
+    log "Grafana service type is $GRAFANA_SERVICE_TYPE (not internet-exposed). Access it via port-forward:"
+    echo "  kubectl -n $MONITORING_NAMESPACE port-forward svc/monitoring-grafana 3000:80"
+    echo "  Then open http://localhost:3000"
+    echo "For persistent access, set up an Ingress + TLS + auth in front of the service instead."
   fi
 
   echo "Username: admin"
@@ -266,13 +275,13 @@ EOF
 
   warn "This installs Loki with local filesystem storage - fine for dev/small workloads only. For production or long log retention, switch storage.type to an object store (e.g. Azure Blob) in $WORKDIR/loki-values.yaml."
 
-  local loki_version_flag
-  loki_version_flag=$(version_arg "$LOKI_CHART_VERSION")
+  local loki_version_flag=()
+  version_args_for "$LOKI_CHART_VERSION" loki_version_flag
 
   if helm status loki -n "$LOKI_NAMESPACE" >/dev/null 2>&1; then
-    helm upgrade loki grafana/loki -n "$LOKI_NAMESPACE" -f "$WORKDIR/loki-values.yaml" $loki_version_flag
+    helm upgrade loki grafana/loki -n "$LOKI_NAMESPACE" -f "$WORKDIR/loki-values.yaml" "${loki_version_flag[@]}"
   else
-    helm install loki grafana/loki -n "$LOKI_NAMESPACE" -f "$WORKDIR/loki-values.yaml" $loki_version_flag
+    helm install loki grafana/loki -n "$LOKI_NAMESPACE" -f "$WORKDIR/loki-values.yaml" "${loki_version_flag[@]}"
   fi
 
   kubectl get pods -n "$LOKI_NAMESPACE"
@@ -284,17 +293,17 @@ EOF
 install_promtail() {
   log "Step 7: Installing Promtail (ships container logs to Loki)"
 
-  local promtail_version_flag
-  promtail_version_flag=$(version_arg "$PROMTAIL_CHART_VERSION")
+  local promtail_version_flag=()
+  version_args_for "$PROMTAIL_CHART_VERSION" promtail_version_flag
 
   if helm status promtail -n "$LOKI_NAMESPACE" >/dev/null 2>&1; then
     helm upgrade promtail grafana/promtail -n "$LOKI_NAMESPACE" \
       --set config.clients[0].url="http://loki.${LOKI_NAMESPACE}.svc.cluster.local:3100/loki/api/v1/push" \
-      $promtail_version_flag
+      "${promtail_version_flag[@]}"
   else
     helm install promtail grafana/promtail -n "$LOKI_NAMESPACE" \
       --set config.clients[0].url="http://loki.${LOKI_NAMESPACE}.svc.cluster.local:3100/loki/api/v1/push" \
-      $promtail_version_flag
+      "${promtail_version_flag[@]}"
   fi
 
   kubectl get pods -n "$LOKI_NAMESPACE" -l app.kubernetes.io/name=promtail -o wide
