@@ -10,6 +10,12 @@ This guide covers **two options** to monitor an Azure Kubernetes Service (AKS) c
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
+- [Automated Setup Scripts (How to Run)](#automated-setup-scripts-how-to-run)
+  - [Files in this guide](#files-in-this-guide)
+  - [Step-by-step: run the bootstrap script](#step-by-step-run-the-bootstrap-script)
+  - [Running the individual scripts directly (without the bootstrap)](#running-the-individual-scripts-directly-without-the-bootstrap)
+  - [Example values for testing](#example-values-for-testing)
+  - [Script configuration reference](#script-configuration-reference)
 - [Option 1: Azure-native Monitoring (Recommended)](#option-1-azure-native-monitoring-recommended)
   - [Architecture](#architecture)
   - [Step 1: Register required Azure providers](#step-1-register-required-azure-providers)
@@ -49,6 +55,139 @@ This guide covers **two options** to monitor an Azure Kubernetes Service (AKS) c
   - VM to AKS API server
   - If private AKS, VM must be in same VNet or peered network
 - (Optional) Domain + TLS cert for production Grafana endpoint
+
+---
+
+## Automated Setup Scripts (How to Run)
+
+Everything in Option 1 and Option 2 below has been automated into three scripts. This section tells you exactly which script to run, where, and how — no need to copy/paste individual commands from the rest of this guide unless you want to.
+
+### Files in this guide
+
+| File | Purpose | Where to run it |
+|---|---|---|
+| `bootstrap-aks-monitoring.sh` | Interactive entry point. Asks a few questions, then launches the right script for you. **Start here.** | Any machine with `bash` (your laptop, a jumpbox, or the Ubuntu VM) |
+| `setup-azure-native-monitoring.sh` | Automates Option 1 (Azure Managed Prometheus + Grafana) | Any machine that can run `az` commands against your subscription |
+| `setup-selfmanaged-monitoring.sh` | Automates Option 2 (Prometheus + Grafana + optional Loki on a VM) | **On the Ubuntu VM** that will host/drive the monitoring stack |
+
+All three files must be in the same folder — the bootstrap script looks for the other two next to itself.
+
+### Step-by-step: run the bootstrap script
+
+1. **Get the files onto the target machine.** For Option 1 this can be your laptop or any admin machine; for Option 2 it must be the Ubuntu VM itself (copy the files over with `scp`, `git clone`, or similar).
+
+2. **Make the scripts executable:**
+   ```bash
+   chmod +x bootstrap-aks-monitoring.sh setup-azure-native-monitoring.sh setup-selfmanaged-monitoring.sh
+   ```
+
+3. **Run the bootstrap script:**
+   ```bash
+   ./bootstrap-aks-monitoring.sh
+   ```
+
+4. **Answer the prompts.** You'll be asked for:
+   - Resource group name
+   - AKS cluster name
+   - Which option to run (`1` = Azure-native, `2` = self-managed)
+   - Then a handful of option-specific questions (region/Grafana name for Option 1; subscription ID, Grafana password, exposure type, whether to install Loki for Option 2)
+
+5. **Let it run.** The bootstrap script hands off to the matching script automatically (`exec`, so it becomes that process — you won't see two separate scripts running). Prerequisites (Azure CLI, kubectl, helm, etc.) are installed automatically if missing.
+
+6. **Follow the printed checklist at the end.** Both scripts finish by printing the remaining manual steps (dashboard import, alert rule setup, security hardening) — these are shown in the terminal output, not applied automatically, since they involve choices specific to your org.
+
+If you're prompted by `az login` mid-run, complete that in the browser/device-code flow as usual, then the script continues.
+
+### Running the individual scripts directly (without the bootstrap)
+
+If you'd rather skip the prompts and set everything via environment variables (e.g. for CI/CD), you can run either script directly:
+
+```bash
+# Option 1
+export RESOURCE_GROUP="my-rg"
+export AKS_NAME="my-aks-cluster"
+export LOCATION="eastus"
+export GRAFANA_NAME="my-grafana"
+./setup-azure-native-monitoring.sh
+
+# Option 2 (run this one on the Ubuntu VM)
+export RESOURCE_GROUP="my-rg"
+export AKS_NAME="my-aks-cluster"
+export SUBSCRIPTION_ID="00000000-0000-0000-0000-000000000000"
+export GRAFANA_ADMIN_PASSWORD="a-real-password"
+./setup-selfmanaged-monitoring.sh
+```
+
+Any variable left unset falls back to a placeholder or safe default — the script will stop with a clear error if a required value (like `RESOURCE_GROUP`) is still a placeholder when it's needed.
+
+### Example values for testing
+
+If you just want to test the scripts end-to-end, create your Azure resources with these exact names so they match what you type into the prompts (or export as env vars):
+
+| Value | Example |
+|---|---|
+| Resource group | `aks-monitoring-test-rg` |
+| AKS cluster name | `aks-monitoring-test-cluster` |
+| Location/region | `centralindia` |
+| Grafana instance name (Option 1) | `aks-monitoring-test-grafana` |
+
+Create the test resource group and cluster first, then point the scripts at them:
+
+```bash
+# Create the resource group
+az group create --name aks-monitoring-test-rg --location centralindia
+
+# Create a small AKS cluster for testing (adjust node size/count as needed)
+az aks create \
+  --resource-group aks-monitoring-test-rg \
+  --name aks-monitoring-test-cluster \
+  --node-count 2 \
+  --node-vm-size Standard_B2s \
+  --generate-ssh-keys
+```
+
+Then when running `bootstrap-aks-monitoring.sh`, enter `aks-monitoring-test-rg` and `aks-monitoring-test-cluster` at the prompts — or export them directly:
+
+```bash
+export RESOURCE_GROUP="aks-monitoring-test-rg"
+export AKS_NAME="aks-monitoring-test-cluster"
+export LOCATION="centralindia"
+export GRAFANA_NAME="aks-monitoring-test-grafana"
+```
+
+Swap `centralindia` for whichever region you actually want to test in, and delete the resource group afterward (`az group delete --name aks-monitoring-test-rg --yes --no-wait`) to avoid ongoing costs.
+
+### Script configuration reference
+
+**`setup-azure-native-monitoring.sh`**
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `RESOURCE_GROUP` | Yes | — | |
+| `AKS_NAME` | Yes | — | |
+| `LOCATION` | Yes | — | Azure region, e.g. `eastus` |
+| `GRAFANA_NAME` | Yes | — | |
+| `LOG_ANALYTICS_WS_ID` | No | empty (skips Container Insights) | Set to enable log-based monitoring alongside metrics |
+| `AZURE_MONITOR_WORKSPACE_ID` | No | empty (falls back to RG-wide RBAC scope) | Set for least-privilege `Monitoring Reader` scoping |
+| `INSTALL_AKS_PREVIEW_EXTENSION` | No | `false` | Only needed if your tenant/CLI version requires it |
+
+**`setup-selfmanaged-monitoring.sh`**
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `RESOURCE_GROUP` | Yes | — | |
+| `AKS_NAME` | Yes | — | |
+| `SUBSCRIPTION_ID` | Yes | — | |
+| `GRAFANA_ADMIN_PASSWORD` | No | `ChangeMeStrongPassword!` | **Change this** — the script warns if left default |
+| `GRAFANA_SERVICE_TYPE` | No | `LoadBalancer` | Set to `ClusterIP` for production; script prints `port-forward` instructions in that case |
+| `PROMETHEUS_RETENTION` | No | `15d` | |
+| `PROMETHEUS_STORAGE_SIZE` | No | `50Gi` | |
+| `GRAFANA_STORAGE_SIZE` | No | `20Gi` | |
+| `ALERTMANAGER_STORAGE_SIZE` | No | `10Gi` | |
+| `INSTALL_LOKI` | No | `true` | Set `false` to skip Loki/Promtail entirely |
+| `LOKI_STORAGE_SIZE` | No | `20Gi` | Filesystem storage — dev/small workloads only |
+| `KUBE_PROMETHEUS_STACK_VERSION` / `LOKI_CHART_VERSION` / `PROMTAIL_CHART_VERSION` | No | empty (latest) | Pin for repeatable installs |
+| `WORKDIR` | No | `$HOME/aks-monitoring` | Where generated values files are written |
 
 ---
 
