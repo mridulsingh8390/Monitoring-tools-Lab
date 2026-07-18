@@ -35,6 +35,7 @@ This guide covers **two options** to monitor an Azure Kubernetes Service (AKS) c
 - [Security Best Practices](#security-best-practices)
 - [Troubleshooting](#troubleshooting)
 - [Recommendation](#recommendation)
+- [Cleanup](#cleanup)
 
 ---
 
@@ -77,6 +78,8 @@ That's it — the script installs any missing tools and runs the rest automatica
 
 > Option 2 (self-managed) must be run **on the Ubuntu VM** that will host Prometheus/Grafana. Option 1 can run from any machine with `az` access.
 
+> **Running in Windows Git Bash (MINGW64)?** All scripts already `export MSYS_NO_PATHCONV=1` internally to stop Git Bash from mangling `/subscriptions/...`-style arguments into Windows paths. If you ever run `az`/`kubectl` commands manually outside the scripts, set that env var yourself first: `export MSYS_NO_PATHCONV=1`.
+
 ---
 
 ## Script Reference
@@ -86,6 +89,7 @@ That's it — the script installs any missing tools and runs the rest automatica
 | `bootstrap-aks-monitoring.sh` | Asks a few questions, then runs the correct script below |
 | `setup-azure-native-monitoring.sh` | Sets up Option 1 (Managed Prometheus + Managed Grafana) |
 | `setup-selfmanaged-monitoring.sh` | Sets up Option 2 (Prometheus + Grafana + optional Loki on a VM) |
+| `cleanup-aks-monitoring.sh` | Deletes everything the scripts created — see [Cleanup](#cleanup) |
 
 All three files must be in the same folder.
 
@@ -260,13 +264,24 @@ az role assignment create \
 
 ### Step 5: Import dashboards
 
-In Grafana:
-- Import Kubernetes/AKS dashboards:
-  - Cluster overview
-  - Node/pod CPU & memory
-  - API server latency/errors
-  - Workload-level dashboards
-- Use built-in Azure Monitor/Kubernetes dashboards where available.
+In Grafana, go to **Dashboards → Import**, paste one of the IDs below under "Import via grafana.com", click **Load**, select your **Prometheus/Azure Monitor** data source, then **Import**:
+
+| ID | Dashboard |
+|---|---|
+| `12114` | Kubernetes / Compute Resources / Cluster — cluster-wide CPU/memory overview |
+| `1860` | Node Exporter Full — node-level CPU, memory, disk, network |
+| `18814` | Kubernetes / Networking (requires Advanced Network Observability) |
+
+If the ID import fails (Azure Managed Grafana sometimes can't reach grafana.com directly), download the dashboard's JSON from the grafana.com page instead and use **Upload JSON file** in the same Import screen.
+
+Alternatively, skip manual import entirely: linking Grafana to the cluster via `--grafana-resource-id` auto-provisions Azure's own curated dashboard set —
+
+```bash
+az aks update -g aks-monitoring-test-rg -n aks-monitoring-test-cluster \
+  --grafana-resource-id "$GRAFANA_ID"
+```
+
+(`$GRAFANA_ID` is printed by `setup-azure-native-monitoring.sh` at the end of Step 3.)
 
 ---
 
@@ -612,3 +627,25 @@ helm upgrade monitoring prometheus-community/kube-prometheus-stack \
 - **Choose Option 1 (Azure-native)** for most production scenarios: less operational burden, integrated with Azure RBAC/AD, managed upgrades and scaling, and centralized alerting alongside the rest of your Azure estate.
 - **Choose Option 2 (self-managed)** if you need full control over the Prometheus/Grafana/Loki configuration, want to avoid Azure Managed Grafana costs, need on-prem/hybrid consistency, or are running in an environment where Azure Monitor managed services aren't available or approved.
 - A hybrid approach is also common: use Azure Monitor managed Prometheus for metrics, but run self-managed Grafana or Loki for teams that need deep dashboard/log customization Azure Managed Grafana doesn't yet support.
+
+---
+
+## Cleanup
+
+To delete everything the scripts created (AKS cluster, Managed Grafana, disks, etc.):
+
+```bash
+export MSYS_NO_PATHCONV=1
+chmod +x cleanup-aks-monitoring.sh
+export RESOURCE_GROUP="aks-monitoring-test-rg"
+export AKS_NAME="aks-monitoring-test-cluster"
+./cleanup-aks-monitoring.sh
+```
+
+It asks you to type the resource group name to confirm, then:
+
+1. Deletes the resource group (removes the AKS cluster, Grafana instance, and everything else in it).
+2. Removes the local `kubectl` context/cluster/user entries for the deleted cluster.
+3. Optionally offers to also delete the auto-created `DefaultResourceGroup-<region>` (where the Azure Monitor workspace landed) — only say yes if nothing else in your subscription uses it.
+
+Deletion runs in the background; check progress with `az group list -o table`.
