@@ -96,7 +96,7 @@ All three files must be in the same folder.
 | `RESOURCE_GROUP` | Yes | — |
 | `AKS_NAME` | Yes | — |
 | `LOCATION` | Yes | — |
-| `GRAFANA_NAME` | Yes | — |
+| `GRAFANA_NAME` | Yes | — (must be 2-23 characters — Azure Managed Grafana limit) |
 | `LOG_ANALYTICS_WS_ID` | No | empty |
 | `AZURE_MONITOR_WORKSPACE_ID` | No | empty |
 | `INSTALL_AKS_PREVIEW_EXTENSION` | No | `false` |
@@ -127,7 +127,7 @@ To skip prompts, export variables directly and run the script instead of the boo
 export RESOURCE_GROUP="aks-monitoring-test-rg"
 export AKS_NAME="aks-monitoring-test-cluster"
 export LOCATION="centralindia"
-export GRAFANA_NAME="aks-monitoring-test-grafana"
+export GRAFANA_NAME="aks-mon-test-grafana"
 ./setup-azure-native-monitoring.sh
 ```
 
@@ -212,7 +212,7 @@ az aks enable-addons \
 ### Step 3: Create or attach Azure Managed Grafana
 
 ```bash
-GRAFANA_NAME="aks-monitoring-test-grafana"
+GRAFANA_NAME="aks-mon-test-grafana"
 
 az grafana create \
   --name $GRAFANA_NAME \
@@ -603,6 +603,7 @@ helm upgrade monitoring prometheus-community/kube-prometheus-stack \
 | No logs in Loki/Log Analytics | Promtail/Container Insights not running on all nodes | Check DaemonSet pod count matches node count; check pod logs for connection errors to the log endpoint |
 | VM can't reach AKS API server | Private cluster networking | Confirm VM is in the same VNet/peered VNet and NSGs allow the traffic |
 | Alerts not firing | Alertmanager route/receiver misconfigured | `kubectl exec` into the Alertmanager pod and check its config, or use the Alertmanager UI to inspect silences/routes |
+| `az role assignment create` fails with `MissingSubscription`, or any `az`/`kubectl` command with a `/subscriptions/...`-style argument behaves oddly | Running in Windows Git Bash (MINGW64/MSYS), which auto-converts leading-`/` arguments into Windows paths, corrupting them | The scripts already `export MSYS_NO_PATHCONV=1` to disable this; if you're running commands manually outside the scripts, set that env var yourself first |
 
 ---
 
