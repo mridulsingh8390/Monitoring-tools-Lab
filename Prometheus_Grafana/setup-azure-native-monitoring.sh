@@ -24,7 +24,7 @@ set -euo pipefail
 RESOURCE_GROUP="${RESOURCE_GROUP:-<your-rg>}"
 AKS_NAME="${AKS_NAME:-<your-aks-name>}"
 LOCATION="${LOCATION:-<your-region>}"
-GRAFANA_NAME="${GRAFANA_NAME:-<grafana-name>}"
+GRAFANA_NAME="${GRAFANA_NAME:-aks-mon-test-grafana}"
 
 # Optional: set to a Log Analytics workspace resource ID to also enable
 # Container Insights logging via the classic "monitoring" addon.
@@ -85,8 +85,12 @@ install_prerequisites() {
   fi
 
   if ! command -v jq >/dev/null 2>&1; then
-    log "jq not found, installing (used for optional JSON parsing)..."
-    sudo apt-get update -y && sudo apt-get install -y jq
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      log "jq not found, installing (optional, not required by this script)..."
+      sudo apt-get update -y && sudo apt-get install -y jq
+    else
+      warn "jq not found and sudo isn't available here - skipping. jq isn't required by this script, only helpful for manual debugging."
+    fi
   fi
 
   log "Prerequisites satisfied."
@@ -152,6 +156,11 @@ create_grafana() {
 
   require_placeholder_check GRAFANA_NAME "$GRAFANA_NAME"
   require_placeholder_check LOCATION "$LOCATION"
+
+  local name_len=${#GRAFANA_NAME}
+  if (( name_len < 2 || name_len > 23 )); then
+    die "GRAFANA_NAME '$GRAFANA_NAME' is $name_len characters - Azure Managed Grafana workspace names must be 2-23 characters. Shorten it and re-run (e.g. 'aks-mon-test-grafana')."
+  fi
 
   if az grafana show -g "$RESOURCE_GROUP" -n "$GRAFANA_NAME" >/dev/null 2>&1; then
     log "Grafana instance '$GRAFANA_NAME' already exists, reusing it."
